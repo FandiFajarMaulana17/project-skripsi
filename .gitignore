@@ -1,0 +1,14 @@
+node_modules/
+**/node_modules/
+.env
+.env.*
+!.env.example
+dist/
+.vite/
+*.log
+.DS_Store
+*.backup*
+*.bak
+
+# Windows metadata
+*:Zone.Identifier
