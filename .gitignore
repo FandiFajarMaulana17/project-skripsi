@@ -15,3 +15,14 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+
+# File backup dan database lokal
+*.backup
+*.backup-*
+*.before-*
+*.sebelum-*
+*.bson
+*.metadata.json
+*.tar.gz
+backup/
+*:Zone.Identifier
