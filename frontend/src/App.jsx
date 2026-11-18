@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import "./App.css";
 
 
-const API = "http://localhost:5000/api";
+const API = "/api";
+
+const todayLocal = () => {
+  const date = new Date();
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+};
 
 function App() {
   const [page, setPage] = useState(window.location.pathname);
@@ -10,7 +16,7 @@ function App() {
   const [search, setSearch] = useState({
     origin: "Jakarta",
     destination: "Bandung",
-    date: new Date().toISOString().slice(0, 10)
+    date: todayLocal()
   });
   const [selectedBus, setSelectedBus] = useState(null);
   const [selectedSeats, setSelectedSeats] = useState([]);
@@ -20,6 +26,9 @@ function App() {
     passengerEmail: ""
   });
   const [bookingResult, setBookingResult] = useState(null);
+  const [trackingCode, setTrackingCode] = useState("");
+  const [trackingResult, setTrackingResult] = useState(null);
+  const [trackingLoading, setTrackingLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -34,7 +43,7 @@ function App() {
     busNumber: "",
     origin: "Jakarta",
     destination: "Bandung",
-    departureDate: new Date().toISOString().slice(0, 10),
+    departureDate: todayLocal(),
     departureTime: "08:00",
     arrivalTime: "12:00",
     price: 150000,
@@ -65,7 +74,9 @@ function App() {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(data.message || "Permintaan gagal diproses");
+      const error = new Error(data.message || "Permintaan gagal diproses");
+      error.status = response.status;
+      throw error;
     }
 
     return data;
@@ -90,6 +101,29 @@ function App() {
       setNotice(error.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const trackBooking = async (event) => {
+    event.preventDefault();
+    const code = trackingCode.trim().toUpperCase();
+
+    if (!code) {
+      setNotice("Masukkan kode pemesanan terlebih dahulu.");
+      return;
+    }
+
+    setTrackingLoading(true);
+    setTrackingResult(null);
+    setNotice("");
+
+    try {
+      const data = await request(`/bookings/${encodeURIComponent(code)}`);
+      setTrackingResult(data.booking);
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setTrackingLoading(false);
     }
   };
 
@@ -149,14 +183,24 @@ function App() {
 
   const loadAdminData = async () => {
     try {
-      const [busData, bookingData] = await Promise.all([
-        request("/buses"),
-        request("/bookings", { headers: adminHeaders })
-      ]);
-
+      // Data bus dimuat secara terpisah agar tidak ikut gagal
+      // ketika sesi autentikasi pemesanan kedaluwarsa.
+      const busData = await request("/buses");
       setAdminBuses(busData.buses || busData.data || []);
+
+      const bookingData = await request("/bookings", {
+        headers: adminHeaders
+      });
       setBookings(bookingData.bookings || bookingData.data || []);
     } catch (error) {
+      if (error.status === 401) {
+        localStorage.removeItem("dp_token");
+        setToken("");
+        setBookings([]);
+        setNotice("Sesi admin berakhir. Silakan login kembali.");
+        return;
+      }
+
       setNotice(error.message);
     }
   };
@@ -221,6 +265,35 @@ function App() {
       setNotice(error.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const updateBookingStatus = async (code, action) => {
+    const isApprove = action === "approve";
+    const question = isApprove
+      ? `Setujui pemesanan ${code}?`
+      : `Tolak pemesanan ${code}? Kursi akan tersedia kembali.`;
+
+    if (!window.confirm(question)) return;
+
+    try {
+      const result = await request(
+        `/bookings/${encodeURIComponent(code)}/${action}`,
+        {
+          method: "PATCH",
+          headers: adminHeaders,
+          body: JSON.stringify({
+            message: isApprove
+              ? "Pemesanan disetujui oleh Admin PO Bus Dwi Permata."
+              : "Mohon maaf, pemesanan belum dapat disetujui oleh Admin PO Bus Dwi Permata."
+          })
+        }
+      );
+
+      setNotice(result.message || "Status pemesanan berhasil diperbarui.");
+      await loadAdminData();
+    } catch (error) {
+      setNotice(error.message);
     }
   };
 
@@ -368,7 +441,7 @@ function App() {
               <div className="stat-grid">
                 <div className="stat-card"><span>Total Bus</span><strong>{adminBuses.length}</strong><small>Data armada terdaftar</small></div>
                 <div className="stat-card"><span>Total Pemesanan</span><strong>{bookings.length}</strong><small>Seluruh transaksi tercatat</small></div>
-                <div className="stat-card"><span>Pemesanan Aktif</span><strong>{bookings.filter(b => b.status === "CONFIRMED").length}</strong><small>Status terkonfirmasi</small></div>
+                <div className="stat-card"><span>Pemesanan Aktif</span><strong>{bookings.filter(b => ["PENDING", "APPROVED", "CONFIRMED"].includes(b.status)).length}</strong><small>Status terkonfirmasi</small></div>
               </div>
               <section className="admin-panel">
                 <div className="panel-heading"><div><h3>Pemesanan Terbaru</h3><p>Daftar transaksi pelanggan terbaru.</p></div><button className="outline-btn" onClick={() => setAdminTab("bookings")}>Lihat semua</button></div>
@@ -412,7 +485,43 @@ function App() {
             <section className="admin-panel">
               <div className="panel-heading"><div><h3>Data Pemesanan</h3><p>Pantau dan kelola transaksi pelanggan.</p></div><button className="outline-btn" onClick={loadAdminData}>Muat ulang</button></div>
               <div className="table-wrap"><table><thead><tr><th>Kode</th><th>Penumpang</th><th>Bus</th><th>Kursi</th><th>Total</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
-                {bookings.map(b => <tr key={b._id}><td><strong>{b.bookingCode}</strong></td><td>{b.passengerName}<small>{b.passengerPhone}</small></td><td>{b.bus?.busName || "-"}</td><td>{b.seats?.join(", ")}</td><td>{money(b.totalPrice)}</td><td><span className={`status ${b.status === "CONFIRMED" ? "confirmed" : "cancelled"}`}>{b.status}</span></td><td>{b.status === "CONFIRMED" && <button className="danger-btn" onClick={() => cancelBooking(b.bookingCode)}>Batalkan</button>}</td></tr>)}
+                {bookings.map(b => (
+                  <tr key={b._id}>
+                    <td><strong>{b.bookingCode}</strong></td>
+                    <td>{b.passengerName}<small>{b.passengerPhone}</small></td>
+                    <td>{b.bus?.busName || "-"}</td>
+                    <td>{b.seats?.join(", ")}</td>
+                    <td>{money(b.totalPrice)}</td>
+                    <td>
+                      <span className={`status ${
+                        b.status === "PENDING" ? "pending" :
+                        ["APPROVED", "CONFIRMED"].includes(b.status) ? "confirmed" :
+                        "cancelled"
+                      }`}>
+                        {{
+                          PENDING: "MENUNGGU",
+                          APPROVED: "DISETUJUI",
+                          CONFIRMED: "DISETUJUI",
+                          REJECTED: "DITOLAK",
+                          CANCELLED: "DIBATALKAN"
+                        }[b.status] || b.status}
+                      </span>
+                      {b.adminMessage && <small>{b.adminMessage}</small>}
+                    </td>
+                    <td>
+                      {b.status === "PENDING" && (
+                        <div className="booking-actions">
+                          <button className="approve-btn" onClick={() => updateBookingStatus(b.bookingCode, "approve")}>ACC</button>
+                          <button className="danger-btn" onClick={() => updateBookingStatus(b.bookingCode, "reject")}>Tolak</button>
+                        </div>
+                      )}
+                      {["APPROVED", "CONFIRMED"].includes(b.status) && (
+                        <button className="danger-btn" onClick={() => cancelBooking(b.bookingCode)}>Batalkan</button>
+                      )}
+                      {["REJECTED", "CANCELLED"].includes(b.status) && <small>-</small>}
+                    </td>
+                  </tr>
+                ))}
                 {!bookings.length && <tr><td colSpan="7" className="empty">Belum ada pemesanan.</td></tr>}
               </tbody></table></div>
             </section>
@@ -470,18 +579,70 @@ function App() {
             <form className="search-form" onSubmit={searchBuses}>
               <label>Kota asal<div className="input-icon"><span>⌖</span><input value={search.origin} onChange={e => setSearch({ ...search, origin: e.target.value })} placeholder="Contoh: Jakarta" required /></div></label>
               <label>Kota tujuan<div className="input-icon"><span>⌖</span><input value={search.destination} onChange={e => setSearch({ ...search, destination: e.target.value })} placeholder="Contoh: Bandung" required /></div></label>
-              <label>Tanggal berangkat<div className="input-icon"><span>▦</span><input type="date" min={new Date().toISOString().slice(0, 10)} value={search.date} onChange={e => setSearch({ ...search, date: e.target.value })} required /></div></label>
+              <label>Tanggal berangkat<div className="input-icon"><span>▦</span><input type="date" min={todayLocal()} value={search.date} onChange={e => setSearch({ ...search, date: e.target.value })} required /></div></label>
               <button className="primary-btn search-btn" disabled={loading}>{loading ? "Mencari..." : "Cari Tiket →"}</button>
             </form>
           </div>
         </section>
 
         <section className="results-section container" id="hasil">
+          <div className="tracking-card">
+            <div>
+              <span className="eyebrow">CEK STATUS PESANAN</span>
+              <h2>Lacak pemesanan tiket</h2>
+              <p>Masukkan kode booking untuk melihat status pemesanan perjalanan Anda.</p>
+            </div>
+            <form className="tracking-form" onSubmit={trackBooking}>
+              <input
+                value={trackingCode}
+                onChange={(e) => setTrackingCode(e.target.value.toUpperCase())}
+                placeholder="Contoh: DP-123456"
+                aria-label="Kode pemesanan"
+                required
+              />
+              <button className="primary-btn" disabled={trackingLoading}>
+                {trackingLoading ? "Memeriksa..." : "Lacak Pesanan"}
+              </button>
+            </form>
+            {trackingResult && (
+              <div className="tracking-result">
+                <div className="tracking-result-heading">
+                  <strong>{trackingResult.bookingCode}</strong>
+                  <span className={`status ${
+                    trackingResult.status === "PENDING" ? "pending" :
+                    ["APPROVED", "CONFIRMED"].includes(trackingResult.status) ? "confirmed" :
+                    "cancelled"
+                  }`}>
+                    {{
+                      PENDING: "MENUNGGU PERSETUJUAN",
+                      APPROVED: "DISETUJUI",
+                      CONFIRMED: "DISETUJUI",
+                      REJECTED: "DITOLAK",
+                      CANCELLED: "DIBATALKAN"
+                    }[trackingResult.status] || trackingResult.status}
+                  </span>
+                </div>
+                <div className="tracking-details">
+                  <p><span>Nama penumpang</span><strong>{trackingResult.passengerName}</strong></p>
+                  <p><span>Bus</span><strong>{trackingResult.bus?.busName || "-"}</strong></p>
+                  <p><span>Rute</span><strong>{trackingResult.bus ? `${trackingResult.bus.origin} – ${trackingResult.bus.destination}` : "-"}</strong></p>
+                  <p><span>Tanggal berangkat</span><strong>{dateFormat(trackingResult.bus?.departureDate)}</strong></p>
+                  <p><span>Jam berangkat</span><strong>{trackingResult.bus?.departureTime || "-"}</strong></p>
+                  <p><span>Nomor kursi</span><strong>{trackingResult.seats?.join(", ") || "-"}</strong></p>
+                  <p><span>Total harga</span><strong>{money(trackingResult.totalPrice)}</strong></p>
+                </div>
+                {trackingResult.adminMessage && (
+                  <p className="tracking-message">{trackingResult.adminMessage}</p>
+                )}
+              </div>
+            )}
+          </div>
+
           {notice && <div className="notice">{notice}</div>}
 
           {bookingResult && (
             <div className="success-ticket">
-              <div className="success-mark">✓</div><div><span className="eyebrow">PEMESANAN BERHASIL</span><h2>Tiket berhasil dipesan!</h2><p>Simpan kode pemesanan berikut untuk pemeriksaan lebih lanjut.</p><strong className="booking-code">{bookingResult.bookingCode}</strong><p>Penumpang: {bookingResult.passengerName} · Kursi: {bookingResult.seats?.join(", ")}</p></div>
+              <div className="success-mark">✓</div><div><span className="eyebrow">PEMESANAN BERHASIL</span><h2>Pemesanan berhasil dikirim!</h2><p>Pemesanan kamu sedang menunggu persetujuan Admin. Simpan kode pemesanan untuk memeriksa statusnya.</p><strong className="booking-code">{bookingResult.bookingCode}</strong><p>Penumpang: {bookingResult.passengerName} · Kursi: {bookingResult.seats?.join(", ")}</p></div>
             </div>
           )}
 
@@ -495,7 +656,20 @@ function App() {
                     {seats.map((seat, index) => {
                       const booked = selectedBus.bookedSeats?.includes(seat);
                       const selected = selectedSeats.includes(seat);
-                      return <button key={seat} disabled={booked} className={`seat ${booked ? "booked" : ""} ${selected ? "selected" : ""}`} onClick={() => toggleSeat(seat)}>{seat}</button>;
+                      return (
+                        <button
+                          key={seat}
+                          type="button"
+                          disabled={booked}
+                          className={`seat ${booked ? "booked" : selected ? "selected" : "available"}`}
+                          onClick={() => toggleSeat(seat)}
+                        >
+                          <strong className="seat-number">{seat}</strong>
+                          <small className="seat-status">
+                            {booked ? "Dipesan" : selected ? "Pilihanmu" : "Tersedia"}
+                          </small>
+                        </button>
+                      );
                     })}
                   </div>
                   <div className="seat-legend"><span><i className="seat available"></i>Tersedia</span><span><i className="seat selected"></i>Pilihanmu</span><span><i className="seat booked"></i>Terisi</span></div>
@@ -597,7 +771,7 @@ function App() {
 function BookingTable({ bookings, money }) {
   return (
     <div className="table-wrap"><table><thead><tr><th>Kode</th><th>Penumpang</th><th>Kursi</th><th>Total</th><th>Status</th></tr></thead><tbody>
-      {bookings.map(b => <tr key={b._id}><td><strong>{b.bookingCode}</strong></td><td>{b.passengerName}</td><td>{b.seats?.join(", ")}</td><td>{money(b.totalPrice)}</td><td><span className={`status ${b.status === "CONFIRMED" ? "confirmed" : "cancelled"}`}>{b.status}</span></td></tr>)}
+      {bookings.map(b => <tr key={b._id}><td><strong>{b.bookingCode}</strong></td><td>{b.passengerName}</td><td>{b.seats?.join(", ")}</td><td>{money(b.totalPrice)}</td><td><span className={`status ${b.status === "PENDING" ? "pending" : ["APPROVED", "CONFIRMED"].includes(b.status) ? "confirmed" : "cancelled"}`}>{{ PENDING: "MENUNGGU", APPROVED: "DISETUJUI", CONFIRMED: "DISETUJUI", REJECTED: "DITOLAK", CANCELLED: "DIBATALKAN" }[b.status] || b.status}</span></td></tr>)}
       {!bookings.length && <tr><td colSpan="5" className="empty">Belum ada data pemesanan.</td></tr>}
     </tbody></table></div>
   );

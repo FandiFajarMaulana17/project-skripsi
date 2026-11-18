@@ -194,7 +194,7 @@ exports.deleteBus = async (req, res) => {
 
     const activeBookings = await require("../models/Booking").countDocuments({
       bus: bus._id,
-      status: "CONFIRMED"
+      status: { $in: ["PENDING", "APPROVED", "CONFIRMED"] }
     });
 
     if (activeBookings > 0) {

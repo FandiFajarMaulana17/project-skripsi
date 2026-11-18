@@ -6,13 +6,15 @@ module.exports = (req, res, next) => {
   if (!header || !header.startsWith("Bearer ")) {
     return res.status(401).json({
       success: false,
-      message: "Silakan login sebagai admin"
+      message: "Silakan login terlebih dahulu"
     });
   }
 
   try {
     const token = header.split(" ")[1];
-    req.admin = jwt.verify(token, process.env.JWT_SECRET);
+
+    req.auth = jwt.verify(token, process.env.JWT_SECRET);
+
     next();
   } catch (error) {
     return res.status(401).json({
